@@ -97,48 +97,30 @@ Puppet::Type.
   end
 
   def create
-    t = Tempfile.new('openldap_access')
-    t << "dn: #{getDn(resource[:suffix])}\n"
-    t << "add: olcAccess\n"
-    t << if resource[:position]
-           "olcAccess: {#{resource[:position]}}to #{resource[:what]}\n"
-         else
-           "olcAccess: to #{resource[:what]}\n"
-         end
-    resource[:access].flatten.each do |a|
-      t << "  #{a}\n"
-    end
-    t.close
-    Puppet.debug(File.read(t.path))
-    begin
-      ldapmodify(t.path)
-    rescue StandardError => e
-      raise Puppet::Error, "LDIF content:\n#{File.read t.path}\nError message: #{e.message}"
+    @property_flush << 'add: olcAccess'
+
+    @property_flush << if resource[:position]
+                         "olcAccess: {#{resource[:position]}}to #{resource[:what]}"
+                       else
+                         "olcAccess: to #{resource[:what]}"
+                       end
+
+    @property_flush << resource[:access].flatten.map do |a|
+      "  #{a}"
     end
   end
 
   def destroy
-    t = Tempfile.new('openldap_access')
-    t << "dn: #{getDn(@property_hash[:suffix])}\n"
-    t << "changetype: modify\n"
-    t << "delete: olcAccess\n"
-    t << "olcAccess: {#{@property_hash[:position]}}\n"
-    t.close
-    Puppet.debug(File.read(t.path))
-    begin
-      ldapmodify(t.path)
-    rescue StandardError => e
-      raise Puppet::Error, "LDIF content:\n#{File.read t.path}\nError message: #{e.message}"
-    end
+    @property_flush << [
+      'changetype: modify',
+      'delete: olcAccess',
+      "olcAccess: {#{@property_hash[:position]}}",
+    ]
   end
 
   def initialize(value = {})
     super(value)
-    @property_flush = {}
-  end
-
-  def access=(value)
-    @property_flush[:access] = value.flatten
+    @property_flush = []
   end
 
   def self.getCountOfOlcAccess(suffix)
@@ -172,30 +154,32 @@ Puppet::Type.
   end
 
   def flush
-    unless @property_flush.empty?
+    if @property_flush.empty?
       current_olcAccess = getCurrentOlcAccess(resource[:suffix])
-      t = Tempfile.new('openldap_access')
-      t << "dn: #{getDn(resource[:suffix])}\n"
-      t << "changetype: modify\n"
-      t << "replace: olcAccess\n"
+      @property_flush << [
+        'changetype: modify',
+        'replace: olcAccess',
+      ]
       position = resource[:position] || @property_hash[:position]
       current_olcAccess.each do |olc_access|
         if olc_access[:position].to_i == position.to_i
-          t << "olcAccess: {#{position}}to #{resource[:what]}\n"
+          @property_flush << "olcAccess: {#{position}}to #{resource[:what]}"
           resource[:access].flatten.each do |a|
-            t << "  #{a}\n"
+            @property_flush << "  #{a}"
           end
         else
-          t << "olcAccess: {#{olc_access[:position]}}#{olc_access[:content]}\n"
+          @property_flush << "olcAccess: {#{olc_access[:position]}}#{olc_access[:content]}"
         end
       end
-      self.class.getCountOfOlcAccess(resource[:suffix])
-      t.close
-      Puppet.debug(File.read(t.path))
+    end
+    @property_flush.prepend("dn: #{getDn(resource[:suffix])}")
+    Tempfile.create('openldap_access') do |t|
+      t.puts(@property_flush)
+      Puppet.debug(t.read)
       begin
         ldapmodify(t.path)
       rescue StandardError => e
-        raise Puppet::Error, "LDIF content:\n#{File.read t.path}\nError message: #{e.message}"
+        raise Puppet::Error, "LDIF content:\n#{t.read}\nError message: #{e.message}"
       end
     end
     @property_hash = resource.to_hash
